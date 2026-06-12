@@ -242,7 +242,7 @@ export class DiffPreviewHandler {
   private handleToolCall(toolCall: ToolCall & { sessionUpdate: 'tool_call' }): void {
     if (!isEditKind(toolCall.kind, toolCall.title)) { return; }
 
-    const status = toolCall.status;
+    const status = toolCall.status ?? 'pending';
 
     if (status === 'pending' || status === 'in_progress') {
       this.startEdit(toolCall);
