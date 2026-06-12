@@ -97,10 +97,14 @@ function extractFilePaths(toolCall: ToolCall | ToolCallUpdate): string[] {
     if (paths.length > 0) { return paths; }
   }
 
-  // Priority 4
+  // Priority 4 — title regex (handles both absolute and relative paths)
   if (toolCall.title) {
-    const matches = toolCall.title.match(/(?:\/[\w.\-]+)+/g);
-    if (matches && matches.length > 0) { return matches; }
+    // Try absolute path first (Unix-style)
+    const absMatches = toolCall.title.match(/(?:\/[\w.\-]+)+/g);
+    if (absMatches && absMatches.length > 0) { return absMatches; }
+    // Try relative path with file extension (e.g. "patch (replace): index.html")
+    const relMatch = toolCall.title.match(/(?:^|:\s*)([\w.\-\/\\]+\.[a-z]{1,5})\b/i);
+    if (relMatch && relMatch[1]) { return [relMatch[1]]; }
   }
 
   return [];
@@ -115,6 +119,13 @@ const RAW_INPUT_PATH_KEYS = new Set([
   'targetPath',
   'sourcePath',
 ]);
+
+/** Convert a possibly-relative file path to absolute using workspace root. */
+function normalizePath(filePath: string): string {
+  if (path.isAbsolute(filePath)) { return filePath; }
+  const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  return path.resolve(workspacePath || process.cwd(), filePath);
+}
 
 /** Recursively scan an unknown value for file-path-shaped values. */
 function scanRawInputForPaths(obj: unknown): string[] {
@@ -270,7 +281,7 @@ export class DiffPreviewHandler {
     const paths = extractFilePaths(toolCall);
     if (paths.length === 0) { return; }
 
-    const filePath = paths[0];
+    const filePath = normalizePath(paths[0]);
     // If we already track this tool call for this file, skip re-snapshotting.
     if (this.activeEdits.has(toolCall.toolCallId)) { return; }
 
