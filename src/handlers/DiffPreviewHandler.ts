@@ -303,6 +303,7 @@ export class DiffPreviewHandler {
           this.cleanupEdit(toolCall.toolCallId);
         }
       }, 800); // 800ms debounce — wait for file to stabilize
+      this.debounceTimers.set(toolCall.toolCallId, debounceTimer);
     };
     watcher.onDidChange(onChangeHandler);
     watcher.onDidCreate(onChangeHandler); // also handle new file creation
