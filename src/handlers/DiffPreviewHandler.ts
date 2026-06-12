@@ -17,8 +17,11 @@ import type { SessionNotification, ToolCall, ToolCallUpdate, ToolCallContent } f
 function isEditKind(kind: string | undefined | null, title?: string | null): boolean {
   if (kind === 'edit' || kind === 'delete' || kind === 'move') { return true; }
   // Some agents (e.g. Hermes) don't send `kind` — fall back to title heuristics
+  // Require both an edit verb AND a file reference to reduce false positives
   if (!kind && title) {
-    return /\b(write|edit|patch|replace|modify|update|create|delete|move|rename)_?(file)?\b/i.test(title);
+    const hasEditVerb = /\b(write|edit|patch|create|delete|move|rename|replace)\b/i.test(title);
+    const hasFileRef = /(?:\/[\w.\-]+)+|\b[\w.\-]+\.[a-z]{1,5}\b/i.test(title);
+    return hasEditVerb && hasFileRef;
   }
   return false;
 }
@@ -261,6 +264,7 @@ export class DiffPreviewHandler {
   // -----------------------------------------------------------------------
 
   private fileWatchers = new Map<string, vscode.FileSystemWatcher>();
+  private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   private startEdit(toolCall: ToolCall): void {
     const paths = extractFilePaths(toolCall);
@@ -285,19 +289,23 @@ export class DiffPreviewHandler {
 
     // Set up a file watcher as fallback for agents that don't send
     // tool_call_update with completed status (e.g. Hermes ACP adapter).
-    // When the file changes on disk, show the diff.
+    // When the file changes on disk, show the diff after a debounce
+    // to avoid showing partial writes.
     const watcher = vscode.workspace.createFileSystemWatcher(filePath);
-    const disposable = watcher.onDidChange(() => {
-      // File changed — show diff and clean up
-      const edit = this.activeEdits.get(toolCall.toolCallId);
-      if (edit) {
-        this.openDiff(edit.oldUri, vscode.Uri.file(edit.filePath), toolCall.title);
-        this.cleanupEdit(toolCall.toolCallId);
-      }
-      disposable.dispose();
-      watcher.dispose();
-      this.fileWatchers.delete(toolCall.toolCallId);
-    });
+    let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+    const onChangeHandler = () => {
+      if (debounceTimer) { clearTimeout(debounceTimer); }
+      debounceTimer = setTimeout(() => {
+        this.debounceTimers.delete(toolCall.toolCallId);
+        const edit = this.activeEdits.get(toolCall.toolCallId);
+        if (edit) {
+          this.openDiff(edit.oldUri, vscode.Uri.file(edit.filePath), toolCall.title);
+          this.cleanupEdit(toolCall.toolCallId);
+        }
+      }, 800); // 800ms debounce — wait for file to stabilize
+    };
+    watcher.onDidChange(onChangeHandler);
+    watcher.onDidCreate(onChangeHandler); // also handle new file creation
     this.fileWatchers.set(toolCall.toolCallId, watcher);
     log(`DiffPreview: tracking edit on ${filePath} (id=${toolCall.toolCallId})`);
   }
@@ -413,6 +421,13 @@ export class DiffPreviewHandler {
       this.fileWatchers.delete(toolCallId);
     }
 
+    // Clean up debounce timer if any
+    const timer = this.debounceTimers.get(toolCallId);
+    if (timer) {
+      clearTimeout(timer);
+      this.debounceTimers.delete(toolCallId);
+    }
+
     this.activeEdits.delete(toolCallId);
     log(`DiffPreview: cleaned up edit ${toolCallId}`);
   }
@@ -427,5 +442,10 @@ export class DiffPreviewHandler {
       watcher.dispose();
     }
     this.fileWatchers.clear();
+    // Clean up any remaining debounce timers
+    for (const timer of this.debounceTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.debounceTimers.clear();
   }
 }
